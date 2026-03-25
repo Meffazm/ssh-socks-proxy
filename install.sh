@@ -53,8 +53,8 @@ check_socks() {
 
 log "Connecting to SSH_SERVER_PLACEHOLDER..."
 
-ssh -D "$PORT" -v -C -N \
-    -o ServerAliveInterval=30 \
+ssh -D "$PORT" -q -C -N \
+    -o ServerAliveInterval=15 \
     -o ServerAliveCountMax=2 \
     -o ExitOnForwardFailure=yes \
     -o TCPKeepAlive=yes \

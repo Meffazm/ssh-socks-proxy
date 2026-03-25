@@ -62,8 +62,8 @@ while ($true) {
     # Start SSH as a background process so we can monitor it
     $sshProc = Start-Process -FilePath "ssh" -ArgumentList @(
         "-D", "SOCKS_PORT_PLACEHOLDER",
-        "-v", "-C", "-N",
-        "-o", "ServerAliveInterval=30",
+        "-q", "-C", "-N",
+        "-o", "ServerAliveInterval=15",
         "-o", "ServerAliveCountMax=2",
         "-o", "ExitOnForwardFailure=yes",
         "-o", "TCPKeepAlive=yes",
