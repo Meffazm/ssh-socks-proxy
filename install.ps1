@@ -47,7 +47,7 @@ $LogFile = "SCRIPTS_DIR_PLACEHOLDER\tunnel-proxy.log"
 
 while ($true) {
     Add-Content -Path $LogFile -Value "$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') Connecting to SSH_SERVER_PLACEHOLDER..."
-    & ssh -D SOCKS_PORT_PLACEHOLDER -q -C -N `
+    $sshOutput = & ssh -D SOCKS_PORT_PLACEHOLDER -v -C -N `
         -o ServerAliveInterval=30 `
         -o ServerAliveCountMax=2 `
         -o ExitOnForwardFailure=yes `
@@ -56,7 +56,8 @@ while ($true) {
         -o ConnectionAttempts=1 `
         -o BatchMode=yes `
         -i "SSH_KEY_PLACEHOLDER" `
-        SSH_USER_PLACEHOLDER@SSH_SERVER_PLACEHOLDER
+        SSH_USER_PLACEHOLDER@SSH_SERVER_PLACEHOLDER 2>&1
+    $sshOutput | ForEach-Object { Add-Content -Path $LogFile -Value "$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') SSH: $_" }
     Add-Content -Path $LogFile -Value "$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') Disconnected (exit code: $LASTEXITCODE). Restarting in 5 seconds..."
     Start-Sleep -Seconds 5
 }
