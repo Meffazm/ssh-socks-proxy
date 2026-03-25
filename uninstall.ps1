@@ -8,7 +8,7 @@ foreach ($task in @("ssh-socks-proxy", "ssh-socks-pproxy")) {
 }
 
 $ScriptsDir = Join-Path $env:USERPROFILE "scripts"
-foreach ($file in @("tunnel-proxy.ps1", "pproxy.ps1", "tunnel-proxy.log", "pproxy.log")) {
+foreach ($file in @("tunnel-proxy.ps1", "tunnel-proxy.vbs", "pproxy.ps1", "pproxy.vbs", "tunnel-proxy.log", "pproxy.log")) {
     Remove-Item (Join-Path $ScriptsDir $file) -ErrorAction SilentlyContinue
 }
 

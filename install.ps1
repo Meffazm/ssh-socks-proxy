@@ -108,12 +108,17 @@ $TunnelScript = $TunnelScript -replace 'SSH_SERVER_PLACEHOLDER', $SSH_SERVER
 $TunnelScriptPath = Join-Path $ScriptsDir "tunnel-proxy.ps1"
 $TunnelScript | Set-Content -Path $TunnelScriptPath -Encoding UTF8
 
+# VBScript launcher to run PowerShell with no visible window
+$TunnelVbs = "CreateObject(`"Wscript.Shell`").Run `"powershell.exe -WindowStyle Hidden -ExecutionPolicy Bypass -File `"`"$TunnelScriptPath`"`"`", 0, False"
+$TunnelVbsPath = Join-Path $ScriptsDir "tunnel-proxy.vbs"
+$TunnelVbs | Set-Content -Path $TunnelVbsPath -Encoding ASCII
+
 # Register scheduled task
 $TaskName = "ssh-socks-proxy"
 Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false -ErrorAction SilentlyContinue
 
-$Action = New-ScheduledTaskAction -Execute "powershell.exe" `
-    -Argument "-WindowStyle Hidden -ExecutionPolicy Bypass -File `"$TunnelScriptPath`""
+$Action = New-ScheduledTaskAction -Execute "wscript.exe" `
+    -Argument "`"$TunnelVbsPath`""
 $Trigger = New-ScheduledTaskTrigger -AtLogOn
 $Settings = New-ScheduledTaskSettingsSet `
     -AllowStartIfOnBatteries `
@@ -197,11 +202,16 @@ while ($true) {
     $PproxyScriptPath = Join-Path $ScriptsDir "pproxy.ps1"
     $PproxyScript | Set-Content -Path $PproxyScriptPath -Encoding UTF8
 
+    # VBScript launcher for pproxy
+    $PproxyVbs = "CreateObject(`"Wscript.Shell`").Run `"powershell.exe -WindowStyle Hidden -ExecutionPolicy Bypass -File `"`"$PproxyScriptPath`"`"`", 0, False"
+    $PproxyVbsPath = Join-Path $ScriptsDir "pproxy.vbs"
+    $PproxyVbs | Set-Content -Path $PproxyVbsPath -Encoding ASCII
+
     $PproxyTaskName = "ssh-socks-pproxy"
     Unregister-ScheduledTask -TaskName $PproxyTaskName -Confirm:$false -ErrorAction SilentlyContinue
 
-    $PproxyAction = New-ScheduledTaskAction -Execute "powershell.exe" `
-        -Argument "-WindowStyle Hidden -ExecutionPolicy Bypass -File `"$PproxyScriptPath`""
+    $PproxyAction = New-ScheduledTaskAction -Execute "wscript.exe" `
+        -Argument "`"$PproxyVbsPath`""
 
     Register-ScheduledTask -TaskName $PproxyTaskName -Action $PproxyAction -Trigger $Trigger `
         -Settings $Settings -Description "HTTP proxy (SOCKS5 to HTTP via pproxy)" | Out-Null
