@@ -42,23 +42,74 @@ New-Item -ItemType Directory -Path $ScriptsDir -Force | Out-Null
 Write-Host "Installing SOCKS proxy tunnel..."
 
 $TunnelScript = @'
-# SSH SOCKS5 proxy tunnel with auto-reconnection
+# SSH SOCKS5 proxy tunnel with auto-reconnection and health checks
 $LogFile = "SCRIPTS_DIR_PLACEHOLDER\tunnel-proxy.log"
+
+function Test-SocksProxy {
+    try {
+        $tcp = New-Object System.Net.Sockets.TcpClient
+        $tcp.Connect("127.0.0.1", SOCKS_PORT_PLACEHOLDER)
+        $tcp.Close()
+        return $true
+    } catch {
+        return $false
+    }
+}
 
 while ($true) {
     Add-Content -Path $LogFile -Value "$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') Connecting to SSH_SERVER_PLACEHOLDER..."
-    & ssh -D SOCKS_PORT_PLACEHOLDER -v -C -N `
-        -o ServerAliveInterval=30 `
-        -o ServerAliveCountMax=2 `
-        -o ExitOnForwardFailure=yes `
-        -o TCPKeepAlive=yes `
-        -o ConnectTimeout=10 `
-        -o ConnectionAttempts=1 `
-        -o BatchMode=yes `
-        -i "SSH_KEY_PLACEHOLDER" `
-        SSH_USER_PLACEHOLDER@SSH_SERVER_PLACEHOLDER 2>&1 | `
-        ForEach-Object { Add-Content -Path $LogFile -Value "$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') SSH: $_" }
-    Add-Content -Path $LogFile -Value "$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') Disconnected (exit code: $LASTEXITCODE). Restarting in 5 seconds..."
+
+    # Start SSH as a background process so we can monitor it
+    $sshProc = Start-Process -FilePath "ssh" -ArgumentList @(
+        "-D", "SOCKS_PORT_PLACEHOLDER",
+        "-v", "-C", "-N",
+        "-o", "ServerAliveInterval=30",
+        "-o", "ServerAliveCountMax=2",
+        "-o", "ExitOnForwardFailure=yes",
+        "-o", "TCPKeepAlive=yes",
+        "-o", "ConnectTimeout=10",
+        "-o", "ConnectionAttempts=1",
+        "-o", "BatchMode=yes",
+        "-i", "SSH_KEY_PLACEHOLDER",
+        "SSH_USER_PLACEHOLDER@SSH_SERVER_PLACEHOLDER"
+    ) -NoNewWindow -PassThru -RedirectStandardError "SCRIPTS_DIR_PLACEHOLDER\tunnel-ssh.log"
+
+    # Wait for tunnel to come up (up to 15 seconds)
+    $ready = $false
+    for ($i = 0; $i -lt 15; $i++) {
+        Start-Sleep -Seconds 1
+        if ($sshProc.HasExited) { break }
+        if (Test-SocksProxy) { $ready = $true; break }
+    }
+
+    if ($ready) {
+        Add-Content -Path $LogFile -Value "$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') Connected. SOCKS proxy active on port SOCKS_PORT_PLACEHOLDER."
+        # Health check loop: verify tunnel every 30 seconds
+        while (-not $sshProc.HasExited) {
+            Start-Sleep -Seconds 30
+            if ($sshProc.HasExited) { break }
+            if (-not (Test-SocksProxy)) {
+                Add-Content -Path $LogFile -Value "$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') Health check FAILED. Killing stale SSH process..."
+                $sshProc | Stop-Process -Force -ErrorAction SilentlyContinue
+                break
+            }
+        }
+    } else {
+        Add-Content -Path $LogFile -Value "$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') Tunnel failed to come up within 15 seconds."
+        if (-not $sshProc.HasExited) {
+            $sshProc | Stop-Process -Force -ErrorAction SilentlyContinue
+        }
+    }
+
+    # Append SSH verbose log to main log
+    if (Test-Path "SCRIPTS_DIR_PLACEHOLDER\tunnel-ssh.log") {
+        Get-Content "SCRIPTS_DIR_PLACEHOLDER\tunnel-ssh.log" | ForEach-Object {
+            Add-Content -Path $LogFile -Value "$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') SSH: $_"
+        }
+        Remove-Item "SCRIPTS_DIR_PLACEHOLDER\tunnel-ssh.log" -Force -ErrorAction SilentlyContinue
+    }
+
+    Add-Content -Path $LogFile -Value "$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') Disconnected (exit code: $($sshProc.ExitCode)). Restarting in 5 seconds..."
     Start-Sleep -Seconds 5
 }
 '@

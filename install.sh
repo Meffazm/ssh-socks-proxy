@@ -32,12 +32,28 @@ echo "📦 Installing SOCKS proxy tunnel..."
 
 cat > "$SCRIPTS_DIR/tunnel-proxy.sh" << 'SCRIPT_EOF'
 #!/bin/sh
-# Resilient SSH tunnel with auto-recovery
-# - Exits on any connection failure (launchctl will restart)
-# - Fast detection of dead connections via keepalive
-# - Connection timeout prevents hanging
+# Resilient SSH tunnel with auto-recovery and health checks
+# - Starts SSH in background and monitors SOCKS port every 30s
+# - Kills stale SSH if tunnel becomes unresponsive (e.g. after sleep/wake)
+# - Exits so launchctl can restart the whole thing
 
-exec ssh -D SOCKS_PORT_PLACEHOLDER -q -C -N \
+LOG="SCRIPTS_DIR_PLACEHOLDER/tunnel-proxy.log"
+PORT=SOCKS_PORT_PLACEHOLDER
+
+log() { echo "$(date '+%Y-%m-%d %H:%M:%S') $1" >> "$LOG"; }
+
+check_socks() {
+    # Try to open a TCP connection to the SOCKS port
+    if command -v nc >/dev/null 2>&1; then
+        nc -z 127.0.0.1 "$PORT" 2>/dev/null
+    else
+        (echo > /dev/tcp/127.0.0.1/"$PORT") 2>/dev/null
+    fi
+}
+
+log "Connecting to SSH_SERVER_PLACEHOLDER..."
+
+ssh -D "$PORT" -v -C -N \
     -o ServerAliveInterval=30 \
     -o ServerAliveCountMax=2 \
     -o ExitOnForwardFailure=yes \
@@ -46,10 +62,46 @@ exec ssh -D SOCKS_PORT_PLACEHOLDER -q -C -N \
     -o ConnectionAttempts=1 \
     -o BatchMode=yes \
     -i "SSH_KEY_PLACEHOLDER" \
-    SSH_USER_PLACEHOLDER@SSH_SERVER_PLACEHOLDER
+    SSH_USER_PLACEHOLDER@SSH_SERVER_PLACEHOLDER >> "$LOG" 2>&1 &
+
+SSH_PID=$!
+
+# Wait for tunnel to come up (up to 15 seconds)
+READY=0
+for i in $(seq 1 15); do
+    sleep 1
+    if ! kill -0 "$SSH_PID" 2>/dev/null; then break; fi
+    if check_socks; then READY=1; break; fi
+done
+
+if [ "$READY" -eq 1 ]; then
+    log "Connected. SOCKS proxy active on port $PORT."
+    # Health check loop
+    while kill -0 "$SSH_PID" 2>/dev/null; do
+        sleep 30
+        if ! kill -0 "$SSH_PID" 2>/dev/null; then break; fi
+        if ! check_socks; then
+            log "Health check FAILED. Killing stale SSH process..."
+            kill "$SSH_PID" 2>/dev/null
+            sleep 1
+            kill -9 "$SSH_PID" 2>/dev/null
+            break
+        fi
+    done
+else
+    log "Tunnel failed to come up within 15 seconds."
+    kill "$SSH_PID" 2>/dev/null
+    kill -9 "$SSH_PID" 2>/dev/null
+fi
+
+wait "$SSH_PID" 2>/dev/null
+EXIT_CODE=$?
+log "Disconnected (exit code: $EXIT_CODE)."
+exit $EXIT_CODE
 SCRIPT_EOF
 
 # Replace placeholders with actual values
+sed -i '' "s|SCRIPTS_DIR_PLACEHOLDER|$SCRIPTS_DIR|g" "$SCRIPTS_DIR/tunnel-proxy.sh"
 sed -i '' "s|SOCKS_PORT_PLACEHOLDER|$SOCKS_PORT|g" "$SCRIPTS_DIR/tunnel-proxy.sh"
 sed -i '' "s|SSH_KEY_PLACEHOLDER|$SSH_KEY_FILE|g" "$SCRIPTS_DIR/tunnel-proxy.sh"
 sed -i '' "s|SSH_USER_PLACEHOLDER|$SSH_USER|g" "$SCRIPTS_DIR/tunnel-proxy.sh"
