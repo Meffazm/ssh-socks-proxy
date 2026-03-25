@@ -59,20 +59,13 @@ function Test-SocksProxy {
 while ($true) {
     Add-Content -Path $LogFile -Value "$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') Connecting to SSH_SERVER_PLACEHOLDER..."
 
-    # Start SSH as a background process so we can monitor it
-    $sshProc = Start-Process -FilePath "ssh" -ArgumentList @(
-        "-D", "SOCKS_PORT_PLACEHOLDER",
-        "-q", "-C", "-N",
-        "-o", "ServerAliveInterval=15",
-        "-o", "ServerAliveCountMax=2",
-        "-o", "ExitOnForwardFailure=yes",
-        "-o", "TCPKeepAlive=yes",
-        "-o", "ConnectTimeout=10",
-        "-o", "ConnectionAttempts=1",
-        "-o", "BatchMode=yes",
-        "-i", "SSH_KEY_PLACEHOLDER",
-        "SSH_USER_PLACEHOLDER@SSH_SERVER_PLACEHOLDER"
-    ) -NoNewWindow -PassThru -RedirectStandardError "SCRIPTS_DIR_PLACEHOLDER\tunnel-ssh.log"
+    # Start SSH as a hidden background process (no console window)
+    $psi = New-Object System.Diagnostics.ProcessStartInfo
+    $psi.FileName = "ssh"
+    $psi.Arguments = "-D SOCKS_PORT_PLACEHOLDER -q -C -N -o ServerAliveInterval=15 -o ServerAliveCountMax=2 -o ExitOnForwardFailure=yes -o TCPKeepAlive=yes -o ConnectTimeout=10 -o ConnectionAttempts=1 -o BatchMode=yes -i `"SSH_KEY_PLACEHOLDER`" SSH_USER_PLACEHOLDER@SSH_SERVER_PLACEHOLDER"
+    $psi.UseShellExecute = $false
+    $psi.CreateNoWindow = $true
+    $sshProc = [System.Diagnostics.Process]::Start($psi)
 
     # Wait for tunnel to come up (up to 15 seconds)
     $ready = $false
@@ -90,23 +83,15 @@ while ($true) {
             if ($sshProc.HasExited) { break }
             if (-not (Test-SocksProxy)) {
                 Add-Content -Path $LogFile -Value "$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') Health check FAILED. Killing stale SSH process..."
-                $sshProc | Stop-Process -Force -ErrorAction SilentlyContinue
+                try { $sshProc.Kill() } catch {}
                 break
             }
         }
     } else {
         Add-Content -Path $LogFile -Value "$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') Tunnel failed to come up within 15 seconds."
         if (-not $sshProc.HasExited) {
-            $sshProc | Stop-Process -Force -ErrorAction SilentlyContinue
+            try { $sshProc.Kill() } catch {}
         }
-    }
-
-    # Append SSH verbose log to main log
-    if (Test-Path "SCRIPTS_DIR_PLACEHOLDER\tunnel-ssh.log") {
-        Get-Content "SCRIPTS_DIR_PLACEHOLDER\tunnel-ssh.log" | ForEach-Object {
-            Add-Content -Path $LogFile -Value "$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') SSH: $_"
-        }
-        Remove-Item "SCRIPTS_DIR_PLACEHOLDER\tunnel-ssh.log" -Force -ErrorAction SilentlyContinue
     }
 
     Add-Content -Path $LogFile -Value "$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') Disconnected (exit code: $($sshProc.ExitCode)). Restarting in 5 seconds..."
@@ -192,7 +177,13 @@ $LogFile = "SCRIPTS_DIR_PLACEHOLDER\pproxy.log"
 
 while ($true) {
     Add-Content -Path $LogFile -Value "$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') Starting pproxy..."
-    & "PPROXY_PATH_PLACEHOLDER" -r socks://127.0.0.1:SOCKS_PORT_PLACEHOLDER -l http://:HTTP_PORT_PLACEHOLDER
+    $psi = New-Object System.Diagnostics.ProcessStartInfo
+    $psi.FileName = "PPROXY_PATH_PLACEHOLDER"
+    $psi.Arguments = "-r socks://127.0.0.1:SOCKS_PORT_PLACEHOLDER -l http://:HTTP_PORT_PLACEHOLDER"
+    $psi.UseShellExecute = $false
+    $psi.CreateNoWindow = $true
+    $proc = [System.Diagnostics.Process]::Start($psi)
+    $proc.WaitForExit()
     Add-Content -Path $LogFile -Value "$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') pproxy exited. Restarting in 5 seconds..."
     Start-Sleep -Seconds 5
 }
