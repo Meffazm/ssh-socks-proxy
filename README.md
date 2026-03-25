@@ -1,27 +1,32 @@
 # SSH SOCKS Proxy
 
-Auto-starting SSH tunnel with SOCKS5 proxy. Currently supports macOS via launchctl.
+Auto-starting SSH tunnel with SOCKS5 proxy and optional HTTP proxy wrapper.
 
-Tested on macOS Sequoia 15+ / darwin 25+ (Apple Silicon).
+Supports **macOS** (launchctl) and **Windows** (Task Scheduler).
 
 ## Quick Setup
 
 ```bash
-# 1. Clone the repo
 git clone https://github.com/Meffazm/ssh-socks-proxy.git && cd ssh-socks-proxy
-
-# 2. Create .env with your settings
 cp .env.template .env
-nano .env  # set SSH_USER, SSH_SERVER, SSH_KEY_FILE
+# Edit .env with your SSH settings
+```
 
-# 3. Run installation
+**macOS:**
+```bash
 ./install.sh
+```
+
+**Windows** (PowerShell):
+```powershell
+powershell -ExecutionPolicy Bypass -File install.ps1
 ```
 
 ## Requirements
 
 - SSH key configured for passwordless connection to server
-- Default SSH key path: `~/.ssh/id_ed25519`
+- **macOS:** macOS Sequoia 15+ (Apple Silicon tested)
+- **Windows:** Windows 10/11 with OpenSSH Client (built-in on Windows 11)
 
 ## Configuration (.env)
 
@@ -35,13 +40,13 @@ nano .env  # set SSH_USER, SSH_SERVER, SSH_KEY_FILE
 
 ## Usage
 
-After installation, the proxy automatically starts on system boot.
+After installation, the proxy automatically starts on system boot (macOS) or logon (Windows).
 
 **SOCKS proxy:** `socks5://127.0.0.1:8090`
 
 **HTTP proxy** (if enabled): `http://127.0.0.1:8091`
 
-### Useful Commands
+### macOS Commands
 
 ```bash
 # Status
@@ -57,10 +62,32 @@ launchctl kickstart -k gui/$(id -u)/tunnel-proxy
 launchctl kill TERM gui/$(id -u)/tunnel-proxy
 ```
 
+### Windows Commands
+
+```powershell
+# Status
+Get-ScheduledTask -TaskName 'ssh-socks-proxy'
+
+# Logs
+Get-Content ~\scripts\tunnel-proxy.log -Tail 20 -Wait
+
+# Restart
+Stop-ScheduledTask -TaskName 'ssh-socks-proxy'; Start-ScheduledTask -TaskName 'ssh-socks-proxy'
+
+# Stop
+Stop-ScheduledTask -TaskName 'ssh-socks-proxy'
+```
+
 ## Uninstall
 
+**macOS:**
 ```bash
 ./uninstall.sh
+```
+
+**Windows:**
+```powershell
+powershell -ExecutionPolicy Bypass -File uninstall.ps1
 ```
 
 ## Browser Setup
@@ -80,6 +107,8 @@ Useful for apps without SOCKS support (e.g., Docker Desktop free version).
 
 Just set `HTTP_PORT=8091` in `.env` before installation.
 
+Uses [pproxy](https://github.com/qwj/python-proxy) to convert SOCKS5 to HTTP. Installed automatically via [uv](https://github.com/astral-sh/uv) if not found.
+
 ## Resilience & Auto-Recovery
 
 The tunnel is configured for maximum reliability:
@@ -91,7 +120,12 @@ The tunnel is configured for maximum reliability:
 - `ConnectTimeout=10` — fail fast if server unreachable
 - `ExitOnForwardFailure=yes` — exit if port binding fails
 
-**launchctl options:**
+**macOS (launchctl):**
 - `KeepAlive.SuccessfulExit=false` — restart on any exit (crash or connection loss)
 - `KeepAlive.NetworkState=true` — restart when network becomes available
 - `ThrottleInterval=5` — wait 5 seconds between restart attempts
+
+**Windows (Task Scheduler):**
+- Runs at logon with no execution time limit
+- Built-in reconnection loop with 5-second retry interval
+- Runs hidden (no console window)
