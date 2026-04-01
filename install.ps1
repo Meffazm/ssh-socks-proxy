@@ -135,7 +135,7 @@ Write-Host "SSH SOCKS proxy installed: socks5://127.0.0.1:$SOCKS_PORT" -Foregrou
 if ($XRAY_UUID -and $XRAY_PUBLIC_KEY -and $XRAY_SHORT_ID) {
     Write-Host "Installing Xray VLESS+Reality tunnel..."
 
-    if (-not $XRAY_SNI) { $XRAY_SNI = "www.google.com" }
+    if (-not $XRAY_SNI) { $XRAY_SNI = "dl.google.com" }
     if (-not $XRAY_SERVER_PORT) { $XRAY_SERVER_PORT = "443" }
 
     # Find or install xray-core
@@ -212,6 +212,15 @@ if ($XRAY_UUID -and $XRAY_PUBLIC_KEY -and $XRAY_SHORT_ID) {
           "publicKey": "$XRAY_PUBLIC_KEY",
           "shortId": "$XRAY_SHORT_ID",
           "fingerprint": "chrome"
+        },
+        "sockopt": {
+          "tcpKeepAliveIdle": 100,
+          "tcpNoDelay": true,
+          "fragment": {
+            "packets": "tlshello",
+            "length": "100-200",
+            "interval": "10-20"
+          }
         }
       },
       "tag": "proxy"
