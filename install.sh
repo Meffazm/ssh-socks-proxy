@@ -153,7 +153,7 @@ echo "✅ SSH SOCKS proxy installed: socks5://127.0.0.1:$SOCKS_PORT"
 if [ -n "$XRAY_UUID" ] && [ -n "$XRAY_PUBLIC_KEY" ] && [ -n "$XRAY_SHORT_ID" ]; then
     echo "📦 Installing Xray VLESS+Reality tunnel..."
 
-    XRAY_SNI="${XRAY_SNI:-dl.google.com}"
+    XRAY_SNI="${XRAY_SNI:-www.google.com}"
     XRAY_SERVER_PORT="${XRAY_SERVER_PORT:-443}"
 
     # Install xray-core if missing
@@ -215,15 +215,6 @@ if [ -n "$XRAY_UUID" ] && [ -n "$XRAY_PUBLIC_KEY" ] && [ -n "$XRAY_SHORT_ID" ]; 
           "publicKey": "$XRAY_PUBLIC_KEY",
           "shortId": "$XRAY_SHORT_ID",
           "fingerprint": "chrome"
-        },
-        "sockopt": {
-          "tcpKeepAliveIdle": 100,
-          "tcpNoDelay": true,
-          "fragment": {
-            "packets": "tlshello",
-            "length": "100-200",
-            "interval": "10-20"
-          }
         }
       },
       "tag": "proxy"
