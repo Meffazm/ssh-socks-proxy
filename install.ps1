@@ -20,123 +20,24 @@ Get-Content $EnvFile | ForEach-Object {
 }
 
 # Validate required settings
-if (-not $SSH_USER -or -not $SSH_SERVER) {
-    Write-Host "Error: SSH_USER and SSH_SERVER must be set in .env" -ForegroundColor Red
+if (-not $SSH_SERVER) {
+    Write-Host "Error: SSH_SERVER must be set in .env" -ForegroundColor Red
+    exit 1
+}
+if (-not $XRAY_UUID -or -not $XRAY_PUBLIC_KEY -or -not $XRAY_SHORT_ID) {
+    Write-Host "Error: XRAY_UUID, XRAY_PUBLIC_KEY, and XRAY_SHORT_ID must be set in .env" -ForegroundColor Red
     exit 1
 }
 
-# Check SSH is available
-if (-not (Get-Command ssh -ErrorAction SilentlyContinue)) {
-    Write-Host "Error: ssh not found. Install OpenSSH Client from Windows Settings > Apps > Optional Features" -ForegroundColor Red
-    exit 1
-}
-
-# Expand ~ in path
-$SSH_KEY_FILE = $SSH_KEY_FILE -replace '^~', $env:USERPROFILE
 if (-not $SOCKS_PORT) { $SOCKS_PORT = "8090" }
+if (-not $XRAY_SNI) { $XRAY_SNI = "dl.google.com" }
+if (-not $XRAY_SERVER_PORT) { $XRAY_SERVER_PORT = "443" }
 
 $ScriptsDir = Join-Path $env:USERPROFILE "scripts"
 New-Item -ItemType Directory -Path $ScriptsDir -Force | Out-Null
 
-# --- SOCKS Tunnel ---
-Write-Host "Installing SOCKS proxy tunnel..."
-
-$TunnelScript = @'
-# SSH SOCKS5 proxy tunnel with auto-reconnection and health checks
-$LogFile = "SCRIPTS_DIR_PLACEHOLDER\tunnel-proxy.log"
-
-function Test-SocksProxy {
-    try {
-        $tcp = New-Object System.Net.Sockets.TcpClient
-        $tcp.Connect("127.0.0.1", SOCKS_PORT_PLACEHOLDER)
-        $tcp.Close()
-        return $true
-    } catch {
-        return $false
-    }
-}
-
-while ($true) {
-    Add-Content -Path $LogFile -Value "$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') Connecting to SSH_SERVER_PLACEHOLDER..."
-
-    # Start SSH as a hidden background process (no console window)
-    $psi = New-Object System.Diagnostics.ProcessStartInfo
-    $psi.FileName = "ssh"
-    $psi.Arguments = "-D SOCKS_PORT_PLACEHOLDER -q -C -N -o ServerAliveInterval=15 -o ServerAliveCountMax=2 -o ExitOnForwardFailure=yes -o TCPKeepAlive=yes -o ConnectTimeout=10 -o ConnectionAttempts=1 -o BatchMode=yes -i `"SSH_KEY_PLACEHOLDER`" SSH_USER_PLACEHOLDER@SSH_SERVER_PLACEHOLDER"
-    $psi.UseShellExecute = $false
-    $psi.CreateNoWindow = $true
-    $sshProc = [System.Diagnostics.Process]::Start($psi)
-
-    # Wait for tunnel to come up (up to 15 seconds)
-    $ready = $false
-    for ($i = 0; $i -lt 15; $i++) {
-        Start-Sleep -Seconds 1
-        if ($sshProc.HasExited) { break }
-        if (Test-SocksProxy) { $ready = $true; break }
-    }
-
-    if ($ready) {
-        Add-Content -Path $LogFile -Value "$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') Connected. SOCKS proxy active on port SOCKS_PORT_PLACEHOLDER."
-        # Health check loop: verify tunnel every 30 seconds
-        while (-not $sshProc.HasExited) {
-            Start-Sleep -Seconds 30
-            if ($sshProc.HasExited) { break }
-            if (-not (Test-SocksProxy)) {
-                Add-Content -Path $LogFile -Value "$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') Health check FAILED. Killing stale SSH process..."
-                try { $sshProc.Kill() } catch {}
-                break
-            }
-        }
-    } else {
-        Add-Content -Path $LogFile -Value "$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') Tunnel failed to come up within 15 seconds."
-        if (-not $sshProc.HasExited) {
-            try { $sshProc.Kill() } catch {}
-        }
-    }
-
-    Add-Content -Path $LogFile -Value "$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') Disconnected (exit code: $($sshProc.ExitCode)). Restarting in 5 seconds..."
-    Start-Sleep -Seconds 5
-}
-'@
-
-$TunnelScript = $TunnelScript -replace 'SCRIPTS_DIR_PLACEHOLDER', $ScriptsDir
-$TunnelScript = $TunnelScript -replace 'SOCKS_PORT_PLACEHOLDER', $SOCKS_PORT
-$TunnelScript = $TunnelScript -replace 'SSH_KEY_PLACEHOLDER', $SSH_KEY_FILE
-$TunnelScript = $TunnelScript -replace 'SSH_USER_PLACEHOLDER', $SSH_USER
-$TunnelScript = $TunnelScript -replace 'SSH_SERVER_PLACEHOLDER', $SSH_SERVER
-
-$TunnelScriptPath = Join-Path $ScriptsDir "tunnel-proxy.ps1"
-$TunnelScript | Set-Content -Path $TunnelScriptPath -Encoding UTF8
-
-# VBScript launcher to run PowerShell with no visible window
-$TunnelVbs = "CreateObject(`"Wscript.Shell`").Run `"powershell.exe -WindowStyle Hidden -ExecutionPolicy Bypass -File `"`"$TunnelScriptPath`"`"`", 0, False"
-$TunnelVbsPath = Join-Path $ScriptsDir "tunnel-proxy.vbs"
-$TunnelVbs | Set-Content -Path $TunnelVbsPath -Encoding ASCII
-
-# Register scheduled task
-$TaskName = "ssh-socks-proxy"
-Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false -ErrorAction SilentlyContinue
-
-$Action = New-ScheduledTaskAction -Execute "wscript.exe" `
-    -Argument "`"$TunnelVbsPath`""
-$Trigger = New-ScheduledTaskTrigger -AtLogOn
-$Settings = New-ScheduledTaskSettingsSet `
-    -AllowStartIfOnBatteries `
-    -DontStopIfGoingOnBatteries `
-    -ExecutionTimeLimit (New-TimeSpan -Days 0)
-
-Register-ScheduledTask -TaskName $TaskName -Action $Action -Trigger $Trigger `
-    -Settings $Settings -Description "SSH SOCKS5 proxy tunnel" | Out-Null
-Start-ScheduledTask -TaskName $TaskName
-
-Write-Host "SSH SOCKS proxy installed: socks5://127.0.0.1:$SOCKS_PORT" -ForegroundColor Green
-
-# --- Optional: Xray VLESS+Reality (DPI-resistant tunnel) ---
-if ($XRAY_UUID -and $XRAY_PUBLIC_KEY -and $XRAY_SHORT_ID) {
-    Write-Host "Installing Xray VLESS+Reality tunnel..."
-
-    if (-not $XRAY_SNI) { $XRAY_SNI = "dl.google.com" }
-    if (-not $XRAY_SERVER_PORT) { $XRAY_SERVER_PORT = "443" }
+# --- Xray VLESS+Reality tunnel ---
+Write-Host "Installing Xray VLESS+Reality tunnel..."
 
     # Find or install xray-core
     $XrayBin = (Get-Command xray -ErrorAction SilentlyContinue).Source
@@ -261,11 +162,14 @@ while (`$true) {
     $XrayVbsPath = Join-Path $ScriptsDir "tunnel-xray.vbs"
     $XrayVbs | Set-Content -Path $XrayVbsPath -Encoding ASCII
 
-    # Stop SSH tunnel task, register Xray task
-    Stop-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
-
     $XrayTaskName = "xray-socks-proxy"
     Unregister-ScheduledTask -TaskName $XrayTaskName -Confirm:$false -ErrorAction SilentlyContinue
+
+    $Trigger = New-ScheduledTaskTrigger -AtLogOn
+    $Settings = New-ScheduledTaskSettingsSet `
+        -AllowStartIfOnBatteries `
+        -DontStopIfGoingOnBatteries `
+        -ExecutionTimeLimit (New-TimeSpan -Days 0)
 
     $XrayAction = New-ScheduledTaskAction -Execute "wscript.exe" `
         -Argument "`"$XrayVbsPath`""
@@ -274,9 +178,7 @@ while (`$true) {
         -Settings $Settings -Description "Xray VLESS+Reality SOCKS5 proxy tunnel" | Out-Null
     Start-ScheduledTask -TaskName $XrayTaskName
 
-    Write-Host "Xray VLESS+Reality installed (primary): socks5://127.0.0.1:$SOCKS_PORT" -ForegroundColor Green
-    Write-Host "   SSH tunnel stopped (available as fallback)"
-}
+    Write-Host "Xray VLESS+Reality installed: socks5://127.0.0.1:$SOCKS_PORT" -ForegroundColor Green
 
 # --- Optional: HTTP Proxy (pproxy) ---
 if ($HTTP_PORT) {
@@ -371,21 +273,6 @@ Write-Host ""
 Write-Host "Done! Your proxy tunnel will auto-start on logon." -ForegroundColor Green
 Write-Host ""
 Write-Host "Useful commands:"
-if ($XRAY_UUID -and $XRAY_PUBLIC_KEY -and $XRAY_SHORT_ID) {
-    Write-Host "  Xray status:   Get-ScheduledTask -TaskName 'xray-socks-proxy'"
-    Write-Host "  Xray logs:     Get-Content ~\scripts\tunnel-xray.log -Tail 20 -Wait"
-    Write-Host "  Xray restart:  Stop-ScheduledTask -TaskName 'xray-socks-proxy'; Start-ScheduledTask -TaskName 'xray-socks-proxy'"
-    Write-Host ""
-    Write-Host "  Switch to SSH fallback:"
-    Write-Host "    Stop-ScheduledTask -TaskName 'xray-socks-proxy'"
-    Write-Host "    Start-ScheduledTask -TaskName 'ssh-socks-proxy'"
-    Write-Host ""
-    Write-Host "  Switch back to Xray:"
-    Write-Host "    Stop-ScheduledTask -TaskName 'ssh-socks-proxy'"
-    Write-Host "    Start-ScheduledTask -TaskName 'xray-socks-proxy'"
-} else {
-    Write-Host "  Check status:  Get-ScheduledTask -TaskName 'ssh-socks-proxy'"
-    Write-Host "  View logs:     Get-Content ~\scripts\tunnel-proxy.log -Tail 20 -Wait"
-    Write-Host "  Stop:          Stop-ScheduledTask -TaskName 'ssh-socks-proxy'"
-    Write-Host "  Restart:       Stop-ScheduledTask -TaskName 'ssh-socks-proxy'; Start-ScheduledTask -TaskName 'ssh-socks-proxy'"
-}
+Write-Host "  Status:   Get-ScheduledTask -TaskName 'xray-socks-proxy'"
+Write-Host "  Logs:     Get-Content ~\scripts\tunnel-xray.log -Tail 20 -Wait"
+Write-Host "  Restart:  Stop-ScheduledTask -TaskName 'xray-socks-proxy'; Start-ScheduledTask -TaskName 'xray-socks-proxy'"
