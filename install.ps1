@@ -129,7 +129,145 @@ Register-ScheduledTask -TaskName $TaskName -Action $Action -Trigger $Trigger `
     -Settings $Settings -Description "SSH SOCKS5 proxy tunnel" | Out-Null
 Start-ScheduledTask -TaskName $TaskName
 
-Write-Host "SOCKS proxy installed: socks5://127.0.0.1:$SOCKS_PORT" -ForegroundColor Green
+Write-Host "SSH SOCKS proxy installed: socks5://127.0.0.1:$SOCKS_PORT" -ForegroundColor Green
+
+# --- Optional: Xray VLESS+Reality (DPI-resistant tunnel) ---
+if ($XRAY_UUID -and $XRAY_PUBLIC_KEY -and $XRAY_SHORT_ID) {
+    Write-Host "Installing Xray VLESS+Reality tunnel..."
+
+    if (-not $XRAY_SNI) { $XRAY_SNI = "www.google.com" }
+    if (-not $XRAY_SERVER_PORT) { $XRAY_SERVER_PORT = "443" }
+
+    # Find or install xray-core
+    $XrayBin = (Get-Command xray -ErrorAction SilentlyContinue).Source
+    if (-not $XrayBin) {
+        $XrayBin = Join-Path $ScriptsDir "xray\xray.exe"
+    }
+
+    if (-not (Test-Path $XrayBin)) {
+        Write-Host "Downloading xray-core..."
+        $XrayDir = Join-Path $ScriptsDir "xray"
+        New-Item -ItemType Directory -Path $XrayDir -Force | Out-Null
+
+        $XrayRelease = Invoke-RestMethod "https://api.github.com/repos/XTLS/Xray-core/releases/latest"
+        $XrayAsset = $XrayRelease.assets | Where-Object { $_.name -match "Xray-windows-64\.zip$" } | Select-Object -First 1
+        $XrayZip = Join-Path $env:TEMP "xray.zip"
+        Invoke-WebRequest -Uri $XrayAsset.browser_download_url -OutFile $XrayZip
+        Expand-Archive -Path $XrayZip -DestinationPath $XrayDir -Force
+        Remove-Item $XrayZip
+        $XrayBin = Join-Path $XrayDir "xray.exe"
+
+        if (-not (Test-Path $XrayBin)) {
+            Write-Host "Error: xray.exe not found after download" -ForegroundColor Red
+            exit 1
+        }
+    }
+
+    # Write client config
+    $XrayConfigDir = Join-Path $ScriptsDir "xray"
+    New-Item -ItemType Directory -Path $XrayConfigDir -Force | Out-Null
+
+    $XrayConfig = @"
+{
+  "log": {
+    "loglevel": "warning"
+  },
+  "inbounds": [
+    {
+      "listen": "127.0.0.1",
+      "port": $SOCKS_PORT,
+      "protocol": "socks",
+      "settings": {
+        "udp": true
+      },
+      "sniffing": {
+        "enabled": true,
+        "destOverride": ["http", "tls", "quic"]
+      }
+    }
+  ],
+  "outbounds": [
+    {
+      "protocol": "vless",
+      "settings": {
+        "vnext": [
+          {
+            "address": "$SSH_SERVER",
+            "port": $XRAY_SERVER_PORT,
+            "users": [
+              {
+                "id": "$XRAY_UUID",
+                "flow": "xtls-rprx-vision",
+                "encryption": "none"
+              }
+            ]
+          }
+        ]
+      },
+      "streamSettings": {
+        "network": "tcp",
+        "security": "reality",
+        "realitySettings": {
+          "serverName": "$XRAY_SNI",
+          "publicKey": "$XRAY_PUBLIC_KEY",
+          "shortId": "$XRAY_SHORT_ID",
+          "fingerprint": "chrome"
+        }
+      },
+      "tag": "proxy"
+    },
+    {
+      "protocol": "freedom",
+      "tag": "direct"
+    }
+  ]
+}
+"@
+    $XrayConfigPath = Join-Path $XrayConfigDir "config.json"
+    $XrayConfig | Set-Content -Path $XrayConfigPath -Encoding UTF8
+
+    # Xray launcher script
+    $XrayScript = @"
+`$LogFile = "$ScriptsDir\tunnel-xray.log"
+while (`$true) {
+    Add-Content -Path `$LogFile -Value "`$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') Starting Xray..."
+    `$psi = New-Object System.Diagnostics.ProcessStartInfo
+    `$psi.FileName = "$XrayBin"
+    `$psi.Arguments = "run -config `"$XrayConfigPath`""
+    `$psi.UseShellExecute = `$false
+    `$psi.CreateNoWindow = `$true
+    `$psi.RedirectStandardOutput = `$true
+    `$psi.RedirectStandardError = `$true
+    `$proc = [System.Diagnostics.Process]::Start(`$psi)
+    `$proc.WaitForExit()
+    Add-Content -Path `$LogFile -Value "`$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') Xray exited (code: `$(`$proc.ExitCode)). Restarting in 5 seconds..."
+    Start-Sleep -Seconds 5
+}
+"@
+    $XrayScriptPath = Join-Path $ScriptsDir "tunnel-xray.ps1"
+    $XrayScript | Set-Content -Path $XrayScriptPath -Encoding UTF8
+
+    # VBScript launcher
+    $XrayVbs = "CreateObject(`"Wscript.Shell`").Run `"powershell.exe -WindowStyle Hidden -ExecutionPolicy Bypass -File `"`"$XrayScriptPath`"`"`", 0, False"
+    $XrayVbsPath = Join-Path $ScriptsDir "tunnel-xray.vbs"
+    $XrayVbs | Set-Content -Path $XrayVbsPath -Encoding ASCII
+
+    # Stop SSH tunnel task, register Xray task
+    Stop-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
+
+    $XrayTaskName = "xray-socks-proxy"
+    Unregister-ScheduledTask -TaskName $XrayTaskName -Confirm:$false -ErrorAction SilentlyContinue
+
+    $XrayAction = New-ScheduledTaskAction -Execute "wscript.exe" `
+        -Argument "`"$XrayVbsPath`""
+
+    Register-ScheduledTask -TaskName $XrayTaskName -Action $XrayAction -Trigger $Trigger `
+        -Settings $Settings -Description "Xray VLESS+Reality SOCKS5 proxy tunnel" | Out-Null
+    Start-ScheduledTask -TaskName $XrayTaskName
+
+    Write-Host "Xray VLESS+Reality installed (primary): socks5://127.0.0.1:$SOCKS_PORT" -ForegroundColor Green
+    Write-Host "   SSH tunnel stopped (available as fallback)"
+}
 
 # --- Optional: HTTP Proxy (pproxy) ---
 if ($HTTP_PORT) {
@@ -224,7 +362,21 @@ Write-Host ""
 Write-Host "Done! Your proxy tunnel will auto-start on logon." -ForegroundColor Green
 Write-Host ""
 Write-Host "Useful commands:"
-Write-Host "  Check status:  Get-ScheduledTask -TaskName 'ssh-socks-proxy'"
-Write-Host "  View logs:     Get-Content ~\scripts\tunnel-proxy.log -Tail 20 -Wait"
-Write-Host "  Stop:          Stop-ScheduledTask -TaskName 'ssh-socks-proxy'"
-Write-Host "  Restart:       Stop-ScheduledTask -TaskName 'ssh-socks-proxy'; Start-ScheduledTask -TaskName 'ssh-socks-proxy'"
+if ($XRAY_UUID -and $XRAY_PUBLIC_KEY -and $XRAY_SHORT_ID) {
+    Write-Host "  Xray status:   Get-ScheduledTask -TaskName 'xray-socks-proxy'"
+    Write-Host "  Xray logs:     Get-Content ~\scripts\tunnel-xray.log -Tail 20 -Wait"
+    Write-Host "  Xray restart:  Stop-ScheduledTask -TaskName 'xray-socks-proxy'; Start-ScheduledTask -TaskName 'xray-socks-proxy'"
+    Write-Host ""
+    Write-Host "  Switch to SSH fallback:"
+    Write-Host "    Stop-ScheduledTask -TaskName 'xray-socks-proxy'"
+    Write-Host "    Start-ScheduledTask -TaskName 'ssh-socks-proxy'"
+    Write-Host ""
+    Write-Host "  Switch back to Xray:"
+    Write-Host "    Stop-ScheduledTask -TaskName 'ssh-socks-proxy'"
+    Write-Host "    Start-ScheduledTask -TaskName 'xray-socks-proxy'"
+} else {
+    Write-Host "  Check status:  Get-ScheduledTask -TaskName 'ssh-socks-proxy'"
+    Write-Host "  View logs:     Get-Content ~\scripts\tunnel-proxy.log -Tail 20 -Wait"
+    Write-Host "  Stop:          Stop-ScheduledTask -TaskName 'ssh-socks-proxy'"
+    Write-Host "  Restart:       Stop-ScheduledTask -TaskName 'ssh-socks-proxy'; Start-ScheduledTask -TaskName 'ssh-socks-proxy'"
+}

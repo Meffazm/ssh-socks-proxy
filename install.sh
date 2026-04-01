@@ -147,7 +147,131 @@ if launchctl print "$DOMAIN_TARGET/tunnel-proxy" &>/dev/null; then
 fi
 launchctl bootstrap "$DOMAIN_TARGET" "$LAUNCH_AGENTS/tunnel-proxy.plist"
 
-echo "✅ SOCKS proxy installed: socks5://127.0.0.1:$SOCKS_PORT"
+echo "✅ SSH SOCKS proxy installed: socks5://127.0.0.1:$SOCKS_PORT"
+
+# --- Optional: Xray VLESS+Reality (DPI-resistant tunnel) ---
+if [ -n "$XRAY_UUID" ] && [ -n "$XRAY_PUBLIC_KEY" ] && [ -n "$XRAY_SHORT_ID" ]; then
+    echo "📦 Installing Xray VLESS+Reality tunnel..."
+
+    XRAY_SNI="${XRAY_SNI:-www.google.com}"
+    XRAY_SERVER_PORT="${XRAY_SERVER_PORT:-443}"
+
+    # Install xray-core if missing
+    if ! command -v xray >/dev/null 2>&1; then
+        echo "📦 Installing xray-core via Homebrew..."
+        if ! command -v brew >/dev/null 2>&1; then
+            echo "❌ Homebrew not found. Install it from https://brew.sh"
+            exit 1
+        fi
+        brew install xray
+    fi
+
+    XRAY_BIN="$(command -v xray)"
+    XRAY_CONFIG_DIR="$SCRIPTS_DIR/xray"
+    mkdir -p "$XRAY_CONFIG_DIR"
+
+    cat > "$XRAY_CONFIG_DIR/config.json" << XRAY_EOF
+{
+  "log": {
+    "loglevel": "warning"
+  },
+  "inbounds": [
+    {
+      "listen": "127.0.0.1",
+      "port": $SOCKS_PORT,
+      "protocol": "socks",
+      "settings": {
+        "udp": true
+      },
+      "sniffing": {
+        "enabled": true,
+        "destOverride": ["http", "tls", "quic"]
+      }
+    }
+  ],
+  "outbounds": [
+    {
+      "protocol": "vless",
+      "settings": {
+        "vnext": [
+          {
+            "address": "$SSH_SERVER",
+            "port": $XRAY_SERVER_PORT,
+            "users": [
+              {
+                "id": "$XRAY_UUID",
+                "flow": "xtls-rprx-vision",
+                "encryption": "none"
+              }
+            ]
+          }
+        ]
+      },
+      "streamSettings": {
+        "network": "tcp",
+        "security": "reality",
+        "realitySettings": {
+          "serverName": "$XRAY_SNI",
+          "publicKey": "$XRAY_PUBLIC_KEY",
+          "shortId": "$XRAY_SHORT_ID",
+          "fingerprint": "chrome"
+        }
+      },
+      "tag": "proxy"
+    },
+    {
+      "protocol": "freedom",
+      "tag": "direct"
+    }
+  ]
+}
+XRAY_EOF
+
+    cat > "$LAUNCH_AGENTS/tunnel-xray.plist" << EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>tunnel-xray</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>$XRAY_BIN</string>
+        <string>run</string>
+        <string>-config</string>
+        <string>$XRAY_CONFIG_DIR/config.json</string>
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>ThrottleInterval</key>
+    <integer>5</integer>
+    <key>StandardOutPath</key>
+    <string>$SCRIPTS_DIR/tunnel-xray.log</string>
+    <key>StandardErrorPath</key>
+    <string>$SCRIPTS_DIR/tunnel-xray.log</string>
+    <key>ProcessType</key>
+    <string>Background</string>
+</dict>
+</plist>
+EOF
+
+    # Stop SSH tunnel (same port), start Xray as primary
+    if launchctl print "$DOMAIN_TARGET/tunnel-proxy" &>/dev/null; then
+        launchctl bootout "$DOMAIN_TARGET/tunnel-proxy" 2>/dev/null || true
+        sleep 1
+    fi
+
+    if launchctl print "$DOMAIN_TARGET/tunnel-xray" &>/dev/null; then
+        launchctl bootout "$DOMAIN_TARGET/tunnel-xray" 2>/dev/null || true
+        sleep 1
+    fi
+    launchctl bootstrap "$DOMAIN_TARGET" "$LAUNCH_AGENTS/tunnel-xray.plist"
+
+    echo "✅ Xray VLESS+Reality installed (primary): socks5://127.0.0.1:$SOCKS_PORT"
+    echo "   SSH tunnel stopped (available as fallback)"
+fi
 
 # --- Optional: HTTP Proxy (pproxy) ---
 if [ -n "$HTTP_PORT" ]; then
@@ -264,8 +388,22 @@ echo ""
 echo "🎉 Done! Your proxy tunnel will auto-start on boot."
 echo ""
 echo "Useful commands:"
-echo "  Check status:  launchctl print gui/\$(id -u)/tunnel-proxy"
-echo "  View logs:     tail -f ~/scripts/tunnel-proxy.log"
-echo "  Stop:          launchctl kill TERM gui/\$(id -u)/tunnel-proxy"
-echo "  Restart:       launchctl kickstart -k gui/\$(id -u)/tunnel-proxy"
+if [ -n "$XRAY_UUID" ] && [ -n "$XRAY_PUBLIC_KEY" ] && [ -n "$XRAY_SHORT_ID" ]; then
+    echo "  Xray status:   launchctl print gui/\$(id -u)/tunnel-xray"
+    echo "  Xray logs:     tail -f ~/scripts/tunnel-xray.log"
+    echo "  Xray restart:  launchctl kickstart -k gui/\$(id -u)/tunnel-xray"
+    echo ""
+    echo "  Switch to SSH fallback:"
+    echo "    launchctl bootout gui/\$(id -u)/tunnel-xray"
+    echo "    launchctl bootstrap gui/\$(id -u) ~/Library/LaunchAgents/tunnel-proxy.plist"
+    echo ""
+    echo "  Switch back to Xray:"
+    echo "    launchctl bootout gui/\$(id -u)/tunnel-proxy"
+    echo "    launchctl bootstrap gui/\$(id -u) ~/Library/LaunchAgents/tunnel-xray.plist"
+else
+    echo "  Check status:  launchctl print gui/\$(id -u)/tunnel-proxy"
+    echo "  View logs:     tail -f ~/scripts/tunnel-proxy.log"
+    echo "  Stop:          launchctl kill TERM gui/\$(id -u)/tunnel-proxy"
+    echo "  Restart:       launchctl kickstart -k gui/\$(id -u)/tunnel-proxy"
+fi
 
