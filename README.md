@@ -1,300 +1,139 @@
-# SSH SOCKS Proxy
+# AmneziaWG Router Proxy
 
-Auto-starting proxy tunnel with SOCKS5 and optional HTTP proxy.
+DPI-resistant SOCKS5 proxy running on an ASUS router. Bypasses Russian ТСПУ internet censorship without requiring VPN apps on client devices.
 
-Supports **macOS** (launchctl) and **Windows** (Task Scheduler).
+**How it works:** An ASUS RT-AX88U Pro router runs an AmneziaWG tunnel to a foreign VPS and exposes a SOCKS5 proxy on the LAN. Any device on the network can route traffic through the tunnel — no VPN software needed on the device itself.
 
-Supports two tunnel modes:
-- **Xray VLESS+Reality** (primary, recommended) — resistant to DPI/ТСПУ, traffic looks like normal HTTPS
-- **SSH SOCKS tunnel** (fallback) — simple but detectable by DPI
+## Setup
 
-## Quick Setup
+### Prerequisites
 
+- ASUS router with [Asuswrt-Merlin](https://www.asuswrt-merlin.net/) firmware
+- USB drive plugged into the router (for Entware)
+- VPS with [AmneziaVPN](https://amnezia.org/) server (AmneziaWG protocol)
+
+### Client Setup
+
+**Browser:** Install [SwitchyOmega](https://chrome.google.com/webstore/detail/proxy-switchyomega/padekgcemlokbadohgkifijomclgjgif) extension, create a profile:
+- Protocol: `SOCKS5`
+- Server: `192.168.50.1`
+- Port: `8090`
+
+**HTTP proxy** (for CLI tools, Docker, Claude Code, etc.):
+
+macOS:
 ```bash
-git clone https://github.com/Meffazm/ssh-socks-proxy.git && cd ssh-socks-proxy
-cp .env.template .env
-# Edit .env with your SSH settings and Xray credentials
+./setup-pproxy.sh
 ```
 
-**macOS:**
-```bash
-./install.sh
-```
-
-**Windows** (PowerShell as Administrator):
+Windows (PowerShell as Administrator):
 ```powershell
-powershell -ExecutionPolicy Bypass -File install.ps1
+powershell -ExecutionPolicy Bypass -File setup-pproxy.ps1
 ```
 
-## Requirements
+This installs [pproxy](https://github.com/qwj/python-proxy) which converts the router's SOCKS5 to HTTP on `127.0.0.1:8091`. Add to your shell profile:
 
-- SSH key configured for passwordless connection to server (for SSH fallback)
-- **macOS:** macOS Sequoia 15+ (Apple Silicon tested), [Homebrew](https://brew.sh) (for xray-core)
-- **Windows:** Windows 10/11 with OpenSSH Client (built-in on Windows 11)
+```bash
+# macOS (~/.zshrc)
+export HTTP_PROXY="http://127.0.0.1:8091"
+export HTTPS_PROXY="http://127.0.0.1:8091"
+export NO_PROXY="localhost,127.0.0.1,192.168.50.0/24"
+```
 
-## Configuration (.env)
-
-| Variable | Description | Example |
-|----------|-------------|---------|
-| `SSH_USER` | SSH username | `root` |
-| `SSH_SERVER` | Server address | `my-server.com` |
-| `SSH_KEY_FILE` | Path to SSH private key | `~/.ssh/id_ed25519` |
-| `SOCKS_PORT` | SOCKS proxy port | `8090` |
-| `HTTP_PORT` | HTTP proxy port (optional) | `8091` |
-| `XRAY_UUID` | Xray client UUID | `2de4f840-...` |
-| `XRAY_PUBLIC_KEY` | Xray Reality public key | `GbCtFi44n...` |
-| `XRAY_SHORT_ID` | Xray Reality short ID | `2ad3457adffb3171` |
-| `XRAY_SNI` | SNI for Reality (default: `www.google.com`) | `www.google.com` |
-| `XRAY_SERVER_PORT` | Xray server port (default: `443`) | `443` |
-
-When `XRAY_UUID`, `XRAY_PUBLIC_KEY`, and `XRAY_SHORT_ID` are set, Xray becomes the primary tunnel and SSH tunnel is stopped (but stays installed as fallback).
+```powershell
+# Windows (PowerShell, run as Admin)
+[Environment]::SetEnvironmentVariable('HTTP_PROXY', 'http://127.0.0.1:8091', 'User')
+[Environment]::SetEnvironmentVariable('HTTPS_PROXY', 'http://127.0.0.1:8091', 'User')
+[Environment]::SetEnvironmentVariable('NO_PROXY', 'localhost,127.0.0.1,192.168.50.0/24', 'User')
+```
 
 ## Usage
 
-After installation, the proxy automatically starts on system boot (macOS) or logon (Windows).
-
-**SOCKS proxy:** `socks5://127.0.0.1:8090`
-
-**HTTP proxy** (if enabled): `http://127.0.0.1:8091`
-
-## Status & Debugging
-
-### macOS
+Switch VPS servers from any Mac terminal:
 
 ```bash
-# Check Xray tunnel status (primary)
-launchctl print gui/$(id -u)/tunnel-xray
+vpn status    # show tunnel status and verify proxy
+vpn dk        # switch to Denmark
+vpn nl        # switch to Netherlands
+vpn kg        # switch to Kyrgyzstan
+vpn list      # list available servers
+vpn stop      # stop tunnel
+```
 
-# Check SSH tunnel status (fallback)
-launchctl print gui/$(id -u)/tunnel-proxy
+The `vpn` alias is defined in `~/.zshrc`. The script SSHs into the router and runs `awg-manage`.
 
-# Check pproxy status
-launchctl print gui/$(id -u)/pproxy
+### Testing
 
-# Check what's listening on proxy ports
-lsof -i :8090 -i :8091 -P -n
-
-# Test SOCKS5 proxy
-curl --socks5-hostname 127.0.0.1:8090 https://httpbin.org/ip
+```bash
+# Test SOCKS5 directly
+curl -x socks5h://192.168.50.1:8090 https://ifconfig.me
 
 # Test HTTP proxy
-curl -x http://127.0.0.1:8091 https://httpbin.org/ip
-
-# View logs
-tail -f ~/scripts/tunnel-xray.log      # Xray
-tail -f ~/scripts/tunnel-proxy.log     # SSH tunnel
-tail -f ~/scripts/pproxy.log           # pproxy
-
-# Restart services
-launchctl kickstart -k gui/$(id -u)/tunnel-xray
-launchctl kickstart -k gui/$(id -u)/tunnel-proxy
-launchctl kickstart -k gui/$(id -u)/pproxy
-
-# Switch to SSH fallback
-launchctl bootout gui/$(id -u)/tunnel-xray
-launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/tunnel-proxy.plist
-
-# Switch back to Xray
-launchctl bootout gui/$(id -u)/tunnel-proxy
-launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/tunnel-xray.plist
+curl -x http://127.0.0.1:8091 https://ifconfig.me
 ```
 
-### Windows
+## Router Administration
 
-```powershell
-# Check Xray tunnel status (primary)
-Get-ScheduledTask -TaskName 'xray-socks-proxy'
-
-# Check SSH tunnel status (fallback)
-Get-ScheduledTask -TaskName 'ssh-socks-proxy'
-
-# Check pproxy status
-Get-ScheduledTask -TaskName 'ssh-socks-pproxy'
-
-# Test SOCKS5 proxy
-curl --socks5-hostname 127.0.0.1:8090 https://httpbin.org/ip
-
-# Test HTTP proxy
-curl -x http://127.0.0.1:8091 https://httpbin.org/ip
-
-# View logs
-Get-Content ~\scripts\tunnel-xray.log -Tail 20 -Wait     # Xray
-Get-Content ~\scripts\tunnel-proxy.log -Tail 20 -Wait    # SSH tunnel
-Get-Content ~\scripts\pproxy.log -Tail 20 -Wait          # pproxy
-
-# Restart Xray
-Stop-ScheduledTask -TaskName 'xray-socks-proxy'; Start-ScheduledTask -TaskName 'xray-socks-proxy'
-
-# Switch to SSH fallback
-Stop-ScheduledTask -TaskName 'xray-socks-proxy'
-Start-ScheduledTask -TaskName 'ssh-socks-proxy'
-
-# Switch back to Xray
-Stop-ScheduledTask -TaskName 'ssh-socks-proxy'
-Start-ScheduledTask -TaskName 'xray-socks-proxy'
-```
-
-## Windows GUI Alternative
-
-Instead of the automated installer, you can use a GUI client on Windows:
-
-### v2rayN (recommended)
-
-1. Download [v2rayN](https://github.com/2dust/v2rayN/releases) (latest version)
-2. Extract and run `v2rayN.exe`
-3. Add server: **Servers > Add [VLESS]**
-4. Fill in:
-   - **Address:** your server IP
-   - **Port:** `443`
-   - **UUID:** your `XRAY_UUID` from `.env`
-   - **Flow:** `xtls-rprx-vision`
-   - **Encryption:** `none`
-   - **Network:** `tcp`
-   - **TLS:** `reality`
-   - **SNI:** `www.google.com`
-   - **Fingerprint:** `chrome`
-   - **PublicKey:** your `XRAY_PUBLIC_KEY` from `.env`
-   - **ShortId:** your `XRAY_SHORT_ID` from `.env`
-5. Right-click the server > **Set as active server**
-6. In system tray, enable **System Proxy** or configure apps to use `socks5://127.0.0.1:10808`
-
-### Quick import via vless:// URI
-
-Import into any Xray-compatible client (v2rayN, Nekoray, Streisand):
-
-```
-vless://XRAY_UUID@SERVER_IP:443?encryption=none&flow=xtls-rprx-vision&security=reality&sni=www.google.com&fp=chrome&pbk=XRAY_PUBLIC_KEY&sid=XRAY_SHORT_ID&type=tcp#tunnel
-```
-
-Replace `XRAY_UUID`, `SERVER_IP`, `XRAY_PUBLIC_KEY`, and `XRAY_SHORT_ID` with your values.
-
-In v2rayN: **Servers > Import from clipboard**.
-
-### Other Windows GUI clients
-
-- [Nekoray](https://github.com/MatsuriDayo/nekoray/releases) — cross-platform GUI
-- [Invisible Man XRay](https://github.com/InvisibleManVPN/InvisibleMan-XRayClient) — simple Windows GUI
-
-## Uninstall
-
-**macOS:**
+SSH into the router:
 ```bash
-./uninstall.sh
+ssh -p 22 admin@192.168.50.1
 ```
 
-**Windows:**
-```powershell
-powershell -ExecutionPolicy Bypass -File uninstall.ps1
-```
-
-## Browser Setup
-
-Recommended: **SwitchyOmega** extension for Chrome/Firefox:
-
-1. Create a profile with settings:
-   - Protocol: `SOCKS5`
-   - Server: `127.0.0.1`
-   - Port: `8090`
-
-2. In auto-switch, add rules for desired domains
-
-## HTTP Proxy (Optional)
-
-Useful for apps without SOCKS support (e.g., Docker Desktop free version).
-
-Set `HTTP_PORT=8091` in `.env` before installation.
-
-Uses [pproxy](https://github.com/qwj/python-proxy) to convert SOCKS5 to HTTP. Installed automatically via [uv](https://github.com/astral-sh/uv) if not found.
-
-## Server Setup
-
-### Xray VLESS+Reality
-
-Install Xray on your server (Ubuntu/Debian):
-
+Management commands (on the router):
 ```bash
-bash -c "$(curl -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh)" @ install
+export PATH=/opt/bin:/opt/sbin:$PATH
+awg-manage status
+awg-manage list
+awg-manage switch dk
+awg-manage stop
 ```
 
-Generate credentials:
+### Key files on the router
 
-```bash
-xray uuid            # -> your XRAY_UUID
-xray x25519          # -> PrivateKey (server config) and PublicKey (client config)
-openssl rand -hex 8  # -> your XRAY_SHORT_ID
+| Path | Purpose |
+|------|---------|
+| `/opt/sbin/awg-manage` | Tunnel management script |
+| `/opt/sbin/amneziawg-go` | AmneziaWG userspace binary |
+| `/opt/etc/amneziawg/awg-*.conf` | Server configs (dk, nl, kg) |
+| `/jffs/scripts/services-start` | Boot persistence |
+| `/tmp/mnt/Kingston/entware.img` | Entware filesystem (ext3 on NTFS) |
+
+### Adding a new VPS server
+
+1. Set up AmneziaWG on the VPS via AmneziaVPN app
+2. On the VPS, generate a keypair and add as peer:
+   ```bash
+   docker exec amnezia-awg wg genkey  # save as PRIVKEY
+   echo PRIVKEY | docker exec -i amnezia-awg wg pubkey  # save as PUBKEY
+   # Add peer with the PUBKEY and assign an IP
+   ```
+3. Create config on router at `/opt/etc/amneziawg/awg-<name>.conf`
+4. Switch to it: `awg-manage switch <name>`
+
+## Architecture
+
+```
+                    Internet (DPI/ТСПУ)
+                         |
+                    ASUS RT-AX88U Pro (192.168.50.1)
+                    ├── AmneziaWG tunnel (awg0) ──── VPS
+                    ├── Dante sockd (SOCKS5 :8090)
+                    └── Merlin + Entware (USB)
+                         |
+                    LAN (192.168.50.0/24)
+                    ├── Mac ── SwitchyOmega / pproxy
+                    ├── Windows PC ── SwitchyOmega / pproxy
+                    └── Other devices
 ```
 
-Server config (`/usr/local/etc/xray/config.json`):
+The AmneziaWG protocol adds junk packets and header obfuscation to WireGuard, making it undetectable by DPI. The tunnel runs on the router using `amneziawg-go` (userspace Go implementation), so no kernel module is needed.
 
-```json
-{
-  "log": { "loglevel": "warning" },
-  "inbounds": [{
-    "listen": "0.0.0.0",
-    "port": 443,
-    "protocol": "vless",
-    "settings": {
-      "clients": [{ "id": "YOUR_UUID", "flow": "xtls-rprx-vision" }],
-      "decryption": "none"
-    },
-    "streamSettings": {
-      "network": "tcp",
-      "security": "reality",
-      "realitySettings": {
-        "dest": "www.google.com:443",
-        "serverNames": ["www.google.com"],
-        "privateKey": "YOUR_PRIVATE_KEY",
-        "shortIds": ["YOUR_SHORT_ID"]
-      }
-    },
-    "sniffing": { "enabled": true, "destOverride": ["http", "tls", "quic"] }
-  }],
-  "outbounds": [
-    { "protocol": "freedom", "tag": "direct" },
-    { "protocol": "blackhole", "tag": "block" }
-  ]
-}
-```
+Traffic flow: `App → SOCKS5 (router:8090) → sockd → awg0 → VPS → internet`
 
-```bash
-systemctl restart xray
-systemctl enable xray
-```
+For apps that only support HTTP proxy: `App → pproxy (localhost:8091) → SOCKS5 (router:8090) → tunnel`
 
-### Recommended server hardening
+## Resilience
 
-```bash
-# Firewall (adjust ports to match your setup)
-ufw default deny incoming
-ufw default allow outgoing
-ufw allow 22/tcp
-ufw allow 443/tcp
-ufw enable
-
-# Brute force protection
-apt install fail2ban
-
-# TCP BBR (better throughput)
-modprobe tcp_bbr
-echo "tcp_bbr" >> /etc/modules
-sysctl -w net.core.default_qdisc=fq
-sysctl -w net.ipv4.tcp_congestion_control=bbr
-```
-
-## Resilience & Auto-Recovery
-
-Both Xray and SSH tunnels are configured for automatic recovery:
-
-**macOS (launchctl):**
-- `KeepAlive=true` — restart on any exit
-- `ThrottleInterval=5` — wait 5 seconds between restart attempts
-
-**Windows (Task Scheduler):**
-- Runs at logon with no execution time limit
-- Built-in reconnection loop with 5-second retry interval
-- Runs hidden (no console window)
-
-**SSH tunnel extras:**
-- `ServerAliveInterval=15` + `ServerAliveCountMax=2` for fast dead connection detection
-- Health check loop verifies SOCKS port every 30 seconds
-- Kills stale SSH processes on health check failure
+- **Auto-start on boot:** `/jffs/scripts/services-start` mounts Entware and starts the last-used tunnel
+- **KeepAlive:** AmneziaWG maintains persistent connections with 25s keepalive
+- **Server switching:** If one VPS is slow or blocked, switch with `vpn <server>`
